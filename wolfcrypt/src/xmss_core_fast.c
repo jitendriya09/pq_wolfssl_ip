@@ -17,11 +17,14 @@
 #include <string.h>
 #include <stdint.h>
 #include <wolfssl/wolfcrypt/xmss_hash.h>
+#include <wolfssl/wolfcrypt/sha3.h>
 #include <wolfssl/wolfcrypt/xmss_hash_address.h>
 #include <wolfssl/wolfcrypt/xmss.h>
 #include <wolfssl/wolfcrypt/xmss_wots.h>
 #include <wolfssl/wolfcrypt/xmss_utils.h>
 #include <wolfssl/wolfcrypt/xmss_core.h>
+
+#define XMSS_HASH_PADDING_PRF 3
 
 typedef struct{
     unsigned char h;
@@ -217,7 +220,7 @@ static int treehash_minheight_on_stack(bds_state *state,
  * Currently only used for key generation.
  *
  */
-static void treehash_init(unsigned char *node, int height, int index,
+/*static void treehash_init(unsigned char *node, int height, int index,
                           bds_state *state, const unsigned char *sk_seed,
                           const unsigned char *pub_seed, const uint32_t addr[8])
 {
@@ -284,8 +287,101 @@ static void treehash_init(unsigned char *node, int height, int index,
     for (i = 0; i < XMSS_N; i++) {
         node[i] = stack[i];
     }
+}*/
+static void treehash_init(unsigned char *node, int height, int index,
+                          bds_state *state, const unsigned char *sk_seed,
+                          const unsigned char *pub_seed, const uint32_t addr[8])
+{
+    unsigned int idx = index;
+    wc_Shake master_ctx_prf;
+    // use three different addresses because at this point we use all three formats in parallel
+    uint32_t ots_addr[8] = {0};
+    uint32_t ltree_addr[8] = {0};
+    uint32_t node_addr[8] = {0};
+    // only copy layer and tree address parts
+    xmss_copy_subtree_addr(ots_addr, addr);
+    // type = ots
+    xmss_set_type(ots_addr, 0);
+    xmss_copy_subtree_addr(ltree_addr, addr);
+    xmss_set_type(ltree_addr, 1);
+    xmss_copy_subtree_addr(node_addr, addr);
+    xmss_set_type(node_addr, 2);
+
+    if (XMSS_N == 64) {
+        unsigned char buf[XMSS_PADDING_LEN + XMSS_N + 8];
+        unsigned char addr_as_bytes[32];
+
+        // Creating buf with opcode | pub seed | addr [1..8] to take snapshot (136 byte)
+        xmss_ull_to_bytes(buf, XMSS_PADDING_LEN, XMSS_HASH_PADDING_PRF);
+        memcpy(buf + XMSS_PADDING_LEN, pub_seed, XMSS_N);
+        addr_to_bytes(addr_as_bytes, node_addr);
+        memcpy(buf + XMSS_PADDING_LEN + XMSS_N, addr_as_bytes, 8);
+
+        
+        wc_InitShake256(&master_ctx_prf, NULL, 0);
+        wc_Shake256_Update(&master_ctx_prf, (const byte*)buf, XMSS_PADDING_LEN + XMSS_N + 8);
+    }
+
+    uint32_t lastnode, i;
+    unsigned char stack[(height+1)*XMSS_N];
+    unsigned int stacklevels[height+1];
+    unsigned int stackoffset=0;
+    unsigned int nodeh;
+
+    lastnode = idx+(1<<height);
+
+    for (i = 0; i < XMSS_TREE_HEIGHT-XMSS_BDS_K; i++) {
+        state->treehash[i].h = i;
+        state->treehash[i].completed = 1;
+        state->treehash[i].stackusage = 0;
+    }
+
+    i = 0;
+    for (; idx < lastnode; idx++) {
+        set_ltree_addr(ltree_addr, idx);
+        set_ots_addr(ots_addr, idx);
+        gen_leaf_wots(stack+stackoffset*XMSS_N, sk_seed, pub_seed, ltree_addr, ots_addr);
+        stacklevels[stackoffset] = 0;
+        stackoffset++;
+        if (XMSS_TREE_HEIGHT - XMSS_BDS_K > 0 && i == 3) {
+            memcpy(state->treehash[0].node, stack+stackoffset*XMSS_N, XMSS_N);
+        }
+        while (stackoffset>1 && stacklevels[stackoffset-1] == stacklevels[stackoffset-2]) {
+            nodeh = stacklevels[stackoffset-1];
+            if (i >> nodeh == 1) {
+                memcpy(state->auth + nodeh*XMSS_N, stack+(stackoffset-1)*XMSS_N, XMSS_N);
+            }
+            else {
+                if (nodeh < XMSS_TREE_HEIGHT - XMSS_BDS_K && i >> nodeh == 3) {
+                    memcpy(state->treehash[nodeh].node, stack+(stackoffset-1)*XMSS_N, XMSS_N);
+                }
+                else if (nodeh >= XMSS_TREE_HEIGHT - XMSS_BDS_K) {
+                    memcpy(state->retain + ((1 << (XMSS_TREE_HEIGHT - 1 - nodeh)) + nodeh - XMSS_TREE_HEIGHT + (((i >> nodeh) - 3) >> 1)) * XMSS_N, stack+(stackoffset-1)*XMSS_N, XMSS_N);
+                }
+            }
+            xmss_set_tree_height(node_addr, stacklevels[stackoffset-1]);
+            xmss_set_tree_index(node_addr, (idx >> (stacklevels[stackoffset-1]+1)));
+            if (XMSS_N == 64) {
+                thash_h(stack+(stackoffset-2)*XMSS_N, stack+(stackoffset-2)*XMSS_N, pub_seed, node_addr,&master_ctx_prf);
+            }
+            else if(XMSS_N == 32) {
+                thash_h(stack+(stackoffset-2)*XMSS_N, stack+(stackoffset-2)*XMSS_N, pub_seed, node_addr,NULL);
+            }
+            stacklevels[stackoffset-2]++;
+            stackoffset--;
+        }
+        i++;
+    }
+
+    for (i = 0; i < XMSS_N; i++) {
+        node[i] = stack[i];
+    }
+
+    if(XMSS_N == 64) {
+        wc_Shake256_Free(&master_ctx_prf);
+    }
 }
-static void treehash_update(treehash_inst *treehash, bds_state *state,
+/*static void treehash_update(treehash_inst *treehash, bds_state *state,
                             const unsigned char *sk_seed,
                             const unsigned char *pub_seed,
                             const uint32_t addr[8])
@@ -328,6 +424,76 @@ static void treehash_update(treehash_inst *treehash, bds_state *state,
         state->stacklevels[state->stackoffset] = nodeheight;
         state->stackoffset++;
         treehash->next_idx++;
+    }
+}*/
+static void treehash_update(treehash_inst *treehash, bds_state *state,
+                            const unsigned char *sk_seed,
+                            const unsigned char *pub_seed,
+                            const uint32_t addr[8])
+{
+    uint32_t ots_addr[8] = {0};
+    uint32_t ltree_addr[8] = {0};
+    uint32_t node_addr[8] = {0};
+    wc_Shake master_ctx_prf;
+    // only copy layer and tree address parts
+    xmss_copy_subtree_addr(ots_addr, addr);
+    // type = ots
+    xmss_set_type(ots_addr, 0);
+    xmss_copy_subtree_addr(ltree_addr, addr);
+    xmss_set_type(ltree_addr, 1);
+    xmss_copy_subtree_addr(node_addr, addr);
+    xmss_set_type(node_addr, 2);
+
+    if (XMSS_N == 64) {
+        unsigned char buf[XMSS_PADDING_LEN + XMSS_N + 8];
+        unsigned char addr_as_bytes[32];
+
+        // Creating buf with opcode | pub seed | addr [1..8] to take snapshot (136 byte)
+        xmss_ull_to_bytes(buf, XMSS_PADDING_LEN, XMSS_HASH_PADDING_PRF);
+        memcpy(buf + XMSS_PADDING_LEN, pub_seed, XMSS_N);
+        addr_to_bytes(addr_as_bytes, node_addr);
+        memcpy(buf + XMSS_PADDING_LEN + XMSS_N, addr_as_bytes, 8);
+
+        
+        wc_InitShake256(&master_ctx_prf, NULL, 0);
+        wc_Shake256_Update(&master_ctx_prf, (const byte*)buf, XMSS_PADDING_LEN + XMSS_N + 8);
+    }
+
+    set_ltree_addr(ltree_addr, treehash->next_idx);
+    set_ots_addr(ots_addr, treehash->next_idx);
+
+    unsigned char nodebuffer[2 * XMSS_N];
+    unsigned int nodeheight = 0;
+    gen_leaf_wots(nodebuffer, sk_seed, pub_seed, ltree_addr, ots_addr);
+    while (treehash->stackusage > 0 && state->stacklevels[state->stackoffset-1] == nodeheight) {
+        memcpy(nodebuffer + XMSS_N, nodebuffer, XMSS_N);
+        memcpy(nodebuffer, state->stack + (state->stackoffset-1)*XMSS_N, XMSS_N);
+        xmss_set_tree_height(node_addr, nodeheight);
+        xmss_set_tree_index(node_addr, (treehash->next_idx >> (nodeheight+1)));
+        if (XMSS_N == 64) {
+            thash_h(nodebuffer, nodebuffer, pub_seed, node_addr,&master_ctx_prf);
+        }
+        else if(XMSS_N == 32) {
+            thash_h(nodebuffer, nodebuffer, pub_seed, node_addr,NULL);
+        }
+        nodeheight++;
+        treehash->stackusage--;
+        state->stackoffset--;
+    }
+    if (nodeheight == treehash->h) { // this also implies stackusage == 0
+        memcpy(treehash->node, nodebuffer, XMSS_N);
+        treehash->completed = 1;
+    }
+    else {
+        memcpy(state->stack + state->stackoffset*XMSS_N, nodebuffer, XMSS_N);
+        treehash->stackusage++;
+        state->stacklevels[state->stackoffset] = nodeheight;
+        state->stackoffset++;
+        treehash->next_idx++;
+    }
+
+    if(XMSS_N == 64) {
+        wc_Shake256_Free(&master_ctx_prf);
     }
 }
 
@@ -375,7 +541,7 @@ static char bds_treehash_update(bds_state *state, unsigned int updates,
  * Updates the state (typically NEXT_i) by adding a leaf and updating the stack
  * Returns -1 if all leaf nodes have already been processed
  **/
-static char bds_state_update(bds_state *state, const unsigned char *sk_seed,
+/*static char bds_state_update(bds_state *state, const unsigned char *sk_seed,
                              const unsigned char *pub_seed,
                              const uint32_t addr[8])
 {
@@ -430,6 +596,87 @@ static char bds_state_update(bds_state *state, const unsigned char *sk_seed,
     }
     state->next_leaf++;
     return 0;
+}*/
+static char bds_state_update(bds_state *state, const unsigned char *sk_seed,
+                             const unsigned char *pub_seed,
+                             const uint32_t addr[8])
+{
+    uint32_t ltree_addr[8] = {0};
+    uint32_t node_addr[8] = {0};
+    uint32_t ots_addr[8] = {0};
+    wc_Shake master_ctx_prf;
+
+    unsigned int nodeh;
+    int idx = state->next_leaf;
+    if (idx == 1 << XMSS_TREE_HEIGHT) {
+        return -1;
+    }
+
+    // only copy layer and tree address parts
+    xmss_copy_subtree_addr(ots_addr, addr);
+    // type = ots
+    xmss_set_type(ots_addr, 0);
+    xmss_copy_subtree_addr(ltree_addr, addr);
+    xmss_set_type(ltree_addr, 1);
+    xmss_copy_subtree_addr(node_addr, addr);
+    xmss_set_type(node_addr, 2);
+
+    if (XMSS_N == 64) {
+        unsigned char buf[XMSS_PADDING_LEN + XMSS_N + 8];
+        unsigned char addr_as_bytes[32];
+
+        // Creating buf with opcode | pub seed | addr [1..8] to take snapshot (136 byte)
+        xmss_ull_to_bytes(buf, XMSS_PADDING_LEN, XMSS_HASH_PADDING_PRF);
+        memcpy(buf + XMSS_PADDING_LEN, pub_seed, XMSS_N);
+        addr_to_bytes(addr_as_bytes, node_addr);
+        memcpy(buf + XMSS_PADDING_LEN + XMSS_N, addr_as_bytes, 8);
+
+        
+        wc_InitShake256(&master_ctx_prf, NULL, 0);
+        wc_Shake256_Update(&master_ctx_prf, (const byte*)buf, XMSS_PADDING_LEN + XMSS_N + 8);
+    }
+
+    set_ots_addr(ots_addr, idx);
+    set_ltree_addr(ltree_addr, idx);
+
+    gen_leaf_wots(state->stack+state->stackoffset*XMSS_N, sk_seed, pub_seed, ltree_addr, ots_addr);
+
+    state->stacklevels[state->stackoffset] = 0;
+    state->stackoffset++;
+    if (XMSS_TREE_HEIGHT - XMSS_BDS_K > 0 && idx == 3) {
+        memcpy(state->treehash[0].node, state->stack+state->stackoffset*XMSS_N, XMSS_N);
+    }
+    while (state->stackoffset>1 && state->stacklevels[state->stackoffset-1] == state->stacklevels[state->stackoffset-2]) {
+        nodeh = state->stacklevels[state->stackoffset-1];
+        if (idx >> nodeh == 1) {
+            memcpy(state->auth + nodeh*XMSS_N, state->stack+(state->stackoffset-1)*XMSS_N, XMSS_N);
+        }
+        else {
+            if (nodeh < XMSS_TREE_HEIGHT - XMSS_BDS_K && idx >> nodeh == 3) {
+                memcpy(state->treehash[nodeh].node, state->stack+(state->stackoffset-1)*XMSS_N, XMSS_N);
+            }
+            else if (nodeh >= XMSS_TREE_HEIGHT - XMSS_BDS_K) {
+                memcpy(state->retain + ((1 << (XMSS_TREE_HEIGHT - 1 - nodeh)) + nodeh - XMSS_TREE_HEIGHT + (((idx >> nodeh) - 3) >> 1)) * XMSS_N, state->stack+(state->stackoffset-1)*XMSS_N, XMSS_N);
+            }
+        }
+        xmss_set_tree_height(node_addr, state->stacklevels[state->stackoffset-1]);
+        xmss_set_tree_index(node_addr, (idx >> (state->stacklevels[state->stackoffset-1]+1)));
+        if (XMSS_N == 64) {
+            thash_h(state->stack+(state->stackoffset-2)*XMSS_N, state->stack+(state->stackoffset-2)*XMSS_N, pub_seed, node_addr,&master_ctx_prf);
+        }
+        else if(XMSS_N == 32) {
+            thash_h(state->stack+(state->stackoffset-2)*XMSS_N, state->stack+(state->stackoffset-2)*XMSS_N, pub_seed, node_addr,NULL);
+        }
+
+        state->stacklevels[state->stackoffset-2]++;
+        state->stackoffset--;
+    }
+    state->next_leaf++;
+
+    if(XMSS_N == 64) {
+        wc_Shake256_Free(&master_ctx_prf);
+    }
+    return 0;
 }
 
 /**
@@ -437,7 +684,7 @@ static char bds_state_update(bds_state *state, const unsigned char *sk_seed,
  * next leaf node, using the algorithm described by Buchmann, Dahmen and Szydlo
  * in "Post Quantum Cryptography", Springer 2009.
  */
-static void bds_round(bds_state *state, const unsigned long leaf_idx,
+/*static void bds_round(bds_state *state, const unsigned long leaf_idx,
                       const unsigned char *sk_seed,
                       const unsigned char *pub_seed, uint32_t addr[8])
 {
@@ -504,6 +751,100 @@ static void bds_round(bds_state *state, const unsigned long leaf_idx,
                 state->treehash[i].stackusage = 0;
             }
         }
+    }
+}*/
+static void bds_round(bds_state *state, const unsigned long leaf_idx,
+                      const unsigned char *sk_seed,
+                      const unsigned char *pub_seed, uint32_t addr[8])
+{
+    unsigned int i;
+    unsigned int tau = XMSS_TREE_HEIGHT;
+    unsigned int startidx;
+    unsigned int offset, rowidx;
+    unsigned char buf[2 * XMSS_N];
+    wc_Shake master_ctx_prf;
+
+    uint32_t ots_addr[8] = {0};
+    uint32_t ltree_addr[8] = {0};
+    uint32_t node_addr[8] = {0};
+
+    // only copy layer and tree address parts
+    xmss_copy_subtree_addr(ots_addr, addr);
+    // type = ots
+    xmss_set_type(ots_addr, 0);
+    xmss_copy_subtree_addr(ltree_addr, addr);
+    xmss_set_type(ltree_addr, 1);
+    xmss_copy_subtree_addr(node_addr, addr);
+    xmss_set_type(node_addr, 2);
+
+    if (XMSS_N == 64) {
+        unsigned char buf[XMSS_PADDING_LEN + XMSS_N + 8];
+        unsigned char addr_as_bytes[32];
+
+        // Creating buf with opcode | pub seed | addr [1..8] to take snapshot (136 byte)
+        xmss_ull_to_bytes(buf, XMSS_PADDING_LEN, XMSS_HASH_PADDING_PRF);
+        memcpy(buf + XMSS_PADDING_LEN, pub_seed, XMSS_N);
+        addr_to_bytes(addr_as_bytes, node_addr);
+        memcpy(buf + XMSS_PADDING_LEN + XMSS_N, addr_as_bytes, 8);
+
+        
+        wc_InitShake256(&master_ctx_prf, NULL, 0);
+        wc_Shake256_Update(&master_ctx_prf, (const byte*)buf, XMSS_PADDING_LEN + XMSS_N + 8);
+    }
+
+    for (i = 0; i < XMSS_TREE_HEIGHT; i++) {
+        if (! ((leaf_idx >> i) & 1)) {
+            tau = i;
+            break;
+        }
+    }
+
+    if (tau > 0) {
+        memcpy(buf, state->auth + (tau-1) * XMSS_N, XMSS_N);
+        // we need to do this before refreshing state->keep to prevent overwriting
+        memcpy(buf + XMSS_N, state->keep + ((tau-1) >> 1) * XMSS_N, XMSS_N);
+    }
+    if (!((leaf_idx >> (tau + 1)) & 1) && (tau < XMSS_TREE_HEIGHT - 1)) {
+        memcpy(state->keep + (tau >> 1)*XMSS_N, state->auth + tau*XMSS_N, XMSS_N);
+    }
+    if (tau == 0) {
+        set_ltree_addr(ltree_addr, leaf_idx);
+        set_ots_addr(ots_addr, leaf_idx);
+        gen_leaf_wots(state->auth, sk_seed, pub_seed, ltree_addr, ots_addr);
+    }
+    else {
+        xmss_set_tree_height(node_addr, (tau-1));
+        xmss_set_tree_index(node_addr, leaf_idx >> tau);
+        if (XMSS_N == 64) {
+            thash_h(state->auth + tau * XMSS_N, buf, pub_seed, node_addr,&master_ctx_prf);
+        }
+        else if(XMSS_N == 32) {
+            thash_h(state->auth + tau * XMSS_N, buf, pub_seed, node_addr,NULL);
+        }
+        for (i = 0; i < tau; i++) {
+            if (i < XMSS_TREE_HEIGHT - XMSS_BDS_K) {
+                memcpy(state->auth + i * XMSS_N, state->treehash[i].node, XMSS_N);
+            }
+            else {
+                offset = (1 << (XMSS_TREE_HEIGHT - 1 - i)) + i - XMSS_TREE_HEIGHT;
+                rowidx = ((leaf_idx >> i) - 1) >> 1;
+                memcpy(state->auth + i * XMSS_N, state->retain + (offset + rowidx) * XMSS_N, XMSS_N);
+            }
+        }
+
+        for (i = 0; i < ((tau < XMSS_TREE_HEIGHT - XMSS_BDS_K) ? tau : (XMSS_TREE_HEIGHT - XMSS_BDS_K)); i++) {
+            startidx = leaf_idx + 1 + 3 * (1 << i);
+            if (startidx < 1U << XMSS_TREE_HEIGHT) {
+                state->treehash[i].h = i;
+                state->treehash[i].next_idx = startidx;
+                state->treehash[i].completed = 0;
+                state->treehash[i].stackusage = 0;
+            }
+        }
+    }
+
+    if(XMSS_N == 64) {
+        wc_Shake256_Free(&master_ctx_prf);
     }
 }
 

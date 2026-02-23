@@ -38,11 +38,16 @@ int h_msg(unsigned char *out,
           const unsigned char *in, unsigned long long inlen,
           const unsigned char *key, const unsigned int keylen);
 
-int thash_h(unsigned char *out, const unsigned char *in,
-            const unsigned char *pub_seed, uint32_t addr[8]);
+/*int thash_h(unsigned char *out, const unsigned char *in,
+            const unsigned char *pub_seed, uint32_t addr[8]);*/
 
+int thash_h(unsigned char *out, const unsigned char *in,
+            const unsigned char *pub_seed, uint32_t addr[8],wc_Shake *master_ctx_prf);
+
+/*int thash_f(unsigned char *out, const unsigned char *in,
+            const unsigned char *pub_seed, uint32_t addr[8]);*/
 int thash_f(unsigned char *out, const unsigned char *in,
-            const unsigned char *pub_seed, uint32_t addr[8]);
+            const unsigned char *pub_seed, uint32_t addr[8],wc_Shake *master_ctx_prf);
 
 int xmss_hash_message(unsigned char *out, const unsigned char *R,
                  const unsigned char *root, unsigned long long idx,

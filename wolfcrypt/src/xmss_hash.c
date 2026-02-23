@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <wolfssl/wolfcrypt/hash.h>
+#include <wolfssl/wolfcrypt/sha3.h>
 #include <wolfssl/wolfcrypt/xmss_hash_address.h>
 #include <wolfssl/wolfcrypt/xmss_utils.h>
 #include <wolfssl/wolfcrypt/xmss.h>
@@ -42,7 +43,12 @@ static int core_hash(unsigned char *out,
        wc_Sha256Hash(in, inlen, out);
     }
     else if (XMSS_N == 64) {
-    	wc_Sha512Hash(in, inlen, out);
+    	wc_Shake ctx;
+    	int ret = -1;
+    	ret = wc_InitShake256(&ctx, NULL, 0);
+    	ret = wc_Shake256_Update(&ctx, (const byte*)in, inlen);
+    	ret = wc_Shake256_Final(&ctx, out, 64);
+        //wc_Sha512Hash(in, inlen, out);
     }
     else {
         return -1;
@@ -69,7 +75,7 @@ int prf(unsigned char *out, const unsigned char in[32],
  * Computes PRF_keygen(key, in), for a key of XMSS_N bytes, and an input
  * of 32 + XMSS_N bytes
  */
-int prf_keygen(unsigned char *out, const unsigned char *in,
+/*int prf_keygen(unsigned char *out, const unsigned char *in,
         const unsigned char *key)
 {
     unsigned char buf[XMSS_PADDING_LEN + 2*XMSS_N + 32];
@@ -79,8 +85,18 @@ int prf_keygen(unsigned char *out, const unsigned char *in,
     memcpy(buf + XMSS_PADDING_LEN + XMSS_N, in, XMSS_N + 32);
 
     return core_hash(out, buf, XMSS_PADDING_LEN + 2*XMSS_N + 32);
-}
+}*/
+int prf_keygen(unsigned char *out, const unsigned char *in,
+        const unsigned char *key)
+{
+    unsigned char buf[XMSS_PADDING_LEN + 2*XMSS_N + 32];
 
+    xmss_ull_to_bytes(buf, XMSS_PADDING_LEN, XMSS_HASH_PADDING_PRF_KEYGEN);
+    memcpy(buf + XMSS_PADDING_LEN, key, XMSS_N);
+    memcpy(buf + XMSS_PADDING_LEN + XMSS_N, in, XMSS_N + 32);
+
+    return wc_Sha256Hash(buf, XMSS_PADDING_LEN + 2*XMSS_N + 32, out);
+}
 
 /*
  * Computes the message hash using R, the public root, the index of the leaf
@@ -106,7 +122,7 @@ int xmss_hash_message(unsigned char *out, const unsigned char *R,
 /**
  * We assume the left half is in in[0]...in[n-1]
  */
-int thash_h(unsigned char *out, const unsigned char *in,
+/*int thash_h(unsigned char *out, const unsigned char *in,
             const unsigned char *pub_seed, uint32_t addr[8])
 {
     unsigned char buf[XMSS_PADDING_LEN + 3 * XMSS_N];
@@ -135,9 +151,66 @@ int thash_h(unsigned char *out, const unsigned char *in,
         buf[XMSS_PADDING_LEN + XMSS_N + i] = in[i] ^ bitmask[i];
     }
     return core_hash(out, buf, XMSS_PADDING_LEN + 3 * XMSS_N);
+}*/
+
+int thash_h(unsigned char *out, const unsigned char *in,
+            const unsigned char *pub_seed, uint32_t addr[8],wc_Shake *master_ctx_prf)
+{
+    unsigned char buf[XMSS_PADDING_LEN + 3 * XMSS_N];
+    unsigned char bitmask[2 * XMSS_N];
+    unsigned char addr_as_bytes[32];
+    unsigned int i;
+    wc_Shake working_ctx; 
+    // Set the function padding. 
+    xmss_ull_to_bytes(buf, XMSS_PADDING_LEN, XMSS_HASH_PADDING_H);
+
+    // Generate the n-byte key. 
+    set_key_and_mask(addr, 0);
+    addr_to_bytes(addr_as_bytes, addr);
+    if(XMSS_N == 64) {
+        wc_Shake256_Copy(master_ctx_prf, &working_ctx);
+        wc_Shake256_Update(&working_ctx, (const byte*)addr_as_bytes+8,24);
+        wc_Shake256_Final(&working_ctx, buf + XMSS_PADDING_LEN, 64);
+        wc_Shake256_Free(&working_ctx);
+    }
+    else if(XMSS_N == 32) {
+        prf(buf + XMSS_PADDING_LEN, addr_as_bytes, pub_seed);
+    }
+    
+
+    // Generate the 2n-byte mask. 
+    set_key_and_mask(addr, 1);
+    addr_to_bytes(addr_as_bytes, addr);
+    if(XMSS_N == 64) {
+        wc_Shake256_Copy(master_ctx_prf, &working_ctx);
+        wc_Shake256_Update(&working_ctx, (const byte*)addr_as_bytes+8,24);
+        wc_Shake256_Final(&working_ctx, bitmask, 64);
+        wc_Shake256_Free(&working_ctx);
+    }
+    else if(XMSS_N == 32) {
+        prf(bitmask, addr_as_bytes, pub_seed);
+    }
+    
+
+    set_key_and_mask(addr, 2);
+    addr_to_bytes(addr_as_bytes, addr);
+    if(XMSS_N == 64) {
+        wc_Shake256_Copy(master_ctx_prf, &working_ctx);
+        wc_Shake256_Update(&working_ctx, (const byte*)addr_as_bytes+8,24);
+        wc_Shake256_Final(&working_ctx, bitmask + XMSS_N, 64);
+        wc_Shake256_Free(&working_ctx);
+    }
+    else if(XMSS_N == 32) {
+        prf(bitmask + XMSS_N, addr_as_bytes, pub_seed);
+    }
+    
+    for (i = 0; i < 2 * XMSS_N; i++) {
+        buf[XMSS_PADDING_LEN + XMSS_N + i] = in[i] ^ bitmask[i];
+    }
+    return core_hash(out, buf, XMSS_PADDING_LEN + 3 * XMSS_N);
 }
 
-int thash_f(unsigned char *out, const unsigned char *in,
+/*int thash_f(unsigned char *out, const unsigned char *in,
             const unsigned char *pub_seed, uint32_t addr[8])
 {
     unsigned char buf[XMSS_PADDING_LEN + 2 * XMSS_N];
@@ -158,6 +231,50 @@ int thash_f(unsigned char *out, const unsigned char *in,
     addr_to_bytes(addr_as_bytes, addr);
     prf(bitmask, addr_as_bytes, pub_seed);
 
+    for (i = 0; i < XMSS_N; i++) {
+        buf[XMSS_PADDING_LEN + XMSS_N + i] = in[i] ^ bitmask[i];
+    }
+    return core_hash(out, buf, XMSS_PADDING_LEN + 2 * XMSS_N);
+}*/
+
+int thash_f(unsigned char *out, const unsigned char *in,
+            const unsigned char *pub_seed, uint32_t addr[8],wc_Shake *master_ctx_prf)
+{
+    unsigned char buf[XMSS_PADDING_LEN + 2 * XMSS_N];
+    unsigned char bitmask[XMSS_N];
+    unsigned char addr_as_bytes[32];
+    unsigned int i;
+
+    // Set the function padding. 
+    xmss_ull_to_bytes(buf, XMSS_PADDING_LEN, XMSS_HASH_PADDING_F);
+
+    // Generate the n-byte key.
+    wc_Shake working_ctx; 
+    set_key_and_mask(addr, 0);
+    addr_to_bytes(addr_as_bytes, addr);
+    if(XMSS_N == 64) {
+        wc_Shake256_Copy(master_ctx_prf, &working_ctx);
+        wc_Shake256_Update(&working_ctx, (const byte*)addr_as_bytes+8,24);
+        wc_Shake256_Final(&working_ctx, buf + XMSS_PADDING_LEN, 64);
+        wc_Shake256_Free(&working_ctx);
+    }
+    else if(XMSS_N == 32) {
+        prf(buf + XMSS_PADDING_LEN, addr_as_bytes, pub_seed);
+    }
+    
+    // Generate the n-byte mask.
+    set_key_and_mask(addr, 1);
+    addr_to_bytes(addr_as_bytes, addr);
+    if(XMSS_N == 64) {
+        wc_Shake256_Copy(master_ctx_prf, &working_ctx);
+        wc_Shake256_Update(&working_ctx, (const byte*)addr_as_bytes+8,24);
+        wc_Shake256_Final(&working_ctx, bitmask, 64);
+        wc_Shake256_Free(&working_ctx);
+    }
+    else if(XMSS_N == 32) {
+        prf(bitmask, addr_as_bytes, pub_seed);
+    }
+    
     for (i = 0; i < XMSS_N; i++) {
         buf[XMSS_PADDING_LEN + XMSS_N + i] = in[i] ^ bitmask[i];
     }
