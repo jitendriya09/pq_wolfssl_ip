@@ -65,30 +65,17 @@
 }*/
 
 static void l_tree(unsigned char *leaf, unsigned char *wots_pk,
-                   const unsigned char *pub_seed, uint32_t addr[8])
+                   const unsigned char *pub_seed, uint32_t addr[8],
+                   wc_Shake *master_ctx_prf)
 {
     unsigned int l = XMSS_WOTS_LEN;
     unsigned int parent_nodes;
     uint32_t i;
     uint32_t height = 0;
-    wc_Shake master_ctx_prf;
+    
 
     xmss_set_tree_height(addr, height);
 
-    if (XMSS_N == 64) {
-        unsigned char buf[XMSS_PADDING_LEN + XMSS_N + 8];
-        unsigned char addr_as_bytes[32];
-
-        // Creating buf with opcode | pub seed | addr [1..8] to take snapshot (136 byte)
-        xmss_ull_to_bytes(buf, XMSS_PADDING_LEN, XMSS_HASH_PADDING_PRF);
-        memcpy(buf + XMSS_PADDING_LEN, pub_seed, XMSS_N);
-        addr_to_bytes(addr_as_bytes, addr);
-        memcpy(buf + XMSS_PADDING_LEN + XMSS_N, addr_as_bytes, 8);
-
-        
-        wc_InitShake256(&master_ctx_prf, NULL, 0);
-        wc_Shake256_Update(&master_ctx_prf, (const byte*)buf, XMSS_PADDING_LEN + XMSS_N + 8);
-    }
     while (l > 1) {
         parent_nodes = l >> 1;
         for (i = 0; i < parent_nodes; i++) {
@@ -96,7 +83,7 @@ static void l_tree(unsigned char *leaf, unsigned char *wots_pk,
             // Hashes the nodes at (i*2)*XMSS_N and (i*2)*XMSS_N + 1
             if (XMSS_N == 64) {
                 thash_h(wots_pk + i*XMSS_N,
-                    wots_pk + (i*2)*XMSS_N, pub_seed, addr,&master_ctx_prf);
+                    wots_pk + (i*2)*XMSS_N, pub_seed, addr,master_ctx_prf);
             }
             else if(XMSS_N == 32) {
                 thash_h(wots_pk + i*XMSS_N,
@@ -118,9 +105,6 @@ static void l_tree(unsigned char *leaf, unsigned char *wots_pk,
         xmss_set_tree_height(addr, height);
     }
     memcpy(leaf, wots_pk, XMSS_N);
-    if(XMSS_N == 64) {
-        wc_Shake256_Free(&master_ctx_prf);
-    }
 }
 /**
  * Computes a root node given a leaf and an auth path
@@ -169,11 +153,11 @@ static void l_tree(unsigned char *leaf, unsigned char *wots_pk,
 }*/
 static void compute_root(unsigned char *root, const unsigned char *leaf,
                          unsigned long leafidx, const unsigned char *auth_path,
-                         const unsigned char *pub_seed, uint32_t addr[8])
+                         const unsigned char *pub_seed, uint32_t addr[8],wc_Shake *master_ctx_prf)
 {
     uint32_t i;
     unsigned char buffer[2*XMSS_N];
-    wc_Shake master_ctx_computeroot_prf;
+    
     // If leafidx is odd (last bit = 1), current path element is a right child
     //   and auth_path has to go left. Otherwise it is the other way around. 
     if (leafidx & 1) {
@@ -186,21 +170,6 @@ static void compute_root(unsigned char *root, const unsigned char *leaf,
     }
     auth_path += XMSS_N;
 
-    if (XMSS_N == 64) {
-        unsigned char buf[XMSS_PADDING_LEN + XMSS_N + 8];
-        unsigned char addr_as_bytes[32];
-
-        // Creating buf with opcode | pub seed | addr [1..8] to take snapshot (136 byte)
-        xmss_ull_to_bytes(buf, XMSS_PADDING_LEN, XMSS_HASH_PADDING_PRF);
-        memcpy(buf + XMSS_PADDING_LEN, pub_seed, XMSS_N);
-        addr_to_bytes(addr_as_bytes, addr);
-        memcpy(buf + XMSS_PADDING_LEN + XMSS_N, addr_as_bytes, 8);
-
-        
-        wc_InitShake256(&master_ctx_computeroot_prf, NULL, 0);
-        wc_Shake256_Update(&master_ctx_computeroot_prf, (const byte*)buf, XMSS_PADDING_LEN + XMSS_N + 8);
-    }
-
     for (i = 0; i < XMSS_TREE_HEIGHT - 1; i++) {
         xmss_set_tree_height(addr, i);
         leafidx >>= 1;
@@ -209,7 +178,7 @@ static void compute_root(unsigned char *root, const unsigned char *leaf,
         // Pick the right or left neighbor, depending on parity of the node. 
         if (leafidx & 1) {
             if (XMSS_N == 64) {
-                thash_h(buffer + XMSS_N, buffer, pub_seed, addr,&master_ctx_computeroot_prf);
+                thash_h(buffer + XMSS_N, buffer, pub_seed, addr,master_ctx_prf);
             }
             else if(XMSS_N == 32) {
                 thash_h(buffer + XMSS_N, buffer, pub_seed, addr,NULL);
@@ -219,7 +188,7 @@ static void compute_root(unsigned char *root, const unsigned char *leaf,
         }
         else {
             if (XMSS_N == 64) {
-                thash_h(buffer, buffer, pub_seed, addr,&master_ctx_computeroot_prf);
+                thash_h(buffer, buffer, pub_seed, addr,master_ctx_prf);
             }
             else if(XMSS_N == 32) {
                 thash_h(buffer, buffer, pub_seed, addr,NULL);
@@ -235,14 +204,10 @@ static void compute_root(unsigned char *root, const unsigned char *leaf,
     leafidx >>= 1;
     xmss_set_tree_index(addr, leafidx);
     if (XMSS_N == 64) {
-        thash_h(root, buffer, pub_seed, addr,&master_ctx_computeroot_prf);
+        thash_h(root, buffer, pub_seed, addr,master_ctx_prf);
     }
     else if(XMSS_N == 32) {
         thash_h(root, buffer, pub_seed, addr,NULL);
-    }
-
-    if(XMSS_N == 64) {
-        wc_Shake256_Free(&master_ctx_computeroot_prf);
     }
 }
 
@@ -254,13 +219,18 @@ static void compute_root(unsigned char *root, const unsigned char *leaf,
  */
 void gen_leaf_wots(unsigned char *leaf,
                    const unsigned char *sk_seed, const unsigned char *pub_seed,
-                   uint32_t ltree_addr[8], uint32_t ots_addr[8])
+                   uint32_t ltree_addr[8], uint32_t ots_addr[8],
+                   wc_Shake *master_ctx_skgen,wc_Shake *master_ctx_prf)
 {
     unsigned char pk[XMSS_WOTS_SIG_BYTES];
-
-    wots_pkgen(pk, sk_seed, pub_seed, ots_addr);
-
-    l_tree(leaf, pk, pub_seed, ltree_addr);
+    if(XMSS_N == 64) {
+        wots_pkgen(pk, sk_seed, pub_seed, ots_addr,master_ctx_skgen,master_ctx_prf);
+        l_tree(leaf, pk, pub_seed, ltree_addr,master_ctx_prf);
+    }
+    else if(XMSS_N == 32) {
+        wots_pkgen(pk, sk_seed, pub_seed, ots_addr,NULL,NULL);
+        l_tree(leaf, pk, pub_seed, ltree_addr,NULL);
+    } 
 }
 
 
@@ -297,6 +267,7 @@ int xmssmt_core_sign_open(unsigned char *m, unsigned long long *mlen,
     unsigned int i;
     uint32_t idx_leaf;
     unsigned char m_tmp[smlen+XMSS_SIG_BYTES];
+    wc_Shake master_ctx_prf;
 
     uint32_t ots_addr[8] = {0};
     uint32_t ltree_addr[8] = {0};
@@ -338,16 +309,45 @@ int xmssmt_core_sign_open(unsigned char *m, unsigned long long *mlen,
         set_ots_addr(ots_addr, idx_leaf);
         /* Initially, root = mhash, but on subsequent iterations it is the root
            of the subtree below the currently processed subtree. */
-        xmss_wots_pk_from_sig(wots_pk, sm, root, pub_seed, ots_addr);
-        sm += XMSS_WOTS_SIG_BYTES;
+        if(XMSS_N == 64) {
+            unsigned char buf_prf[XMSS_PADDING_LEN + XMSS_N + 8];
+            unsigned char addr_as_bytes[32];
 
-        /* Compute the leaf node using the WOTS public key. */
-        set_ltree_addr(ltree_addr, idx_leaf);
-        l_tree(leaf, wots_pk, pub_seed, ltree_addr);
+            // Creating buf with opcode | pub seed | addr [1..8] to take snapshot (136 byte)
+            xmss_ull_to_bytes(buf_prf, XMSS_PADDING_LEN, XMSS_HASH_PADDING_PRF);
+            memcpy(buf_prf + XMSS_PADDING_LEN, pub_seed, XMSS_N);
+            //ots, ltree and node addr are assigned same value as layer address and tree address. so we can work with any address for snapshot.
+            addr_to_bytes(addr_as_bytes, ots_addr); 
+            memcpy(buf_prf + XMSS_PADDING_LEN + XMSS_N, addr_to_bytes, 8);
 
-        /* Compute the root node of this subtree. */
-        compute_root(root, leaf, idx_leaf, sm, pub_seed, node_addr);
-        sm += XMSS_TREE_HEIGHT*XMSS_N;
+            wc_InitShake256(&master_ctx_prf, NULL, 0);
+            wc_Shake256_Update(&master_ctx_prf, (const byte*)buf_prf, XMSS_PADDING_LEN + XMSS_N + 8);
+        }
+
+        if(XMSS_N == 64) {
+            xmss_wots_pk_from_sig(wots_pk, sm, root, pub_seed, ots_addr,&master_ctx_prf);
+            sm += XMSS_WOTS_SIG_BYTES;
+
+            /* Compute the leaf node using the WOTS public key. */
+            set_ltree_addr(ltree_addr, idx_leaf);
+            l_tree(leaf, wots_pk, pub_seed, ltree_addr,&master_ctx_prf);
+
+            /* Compute the root node of this subtree. */
+            compute_root(root, leaf, idx_leaf, sm, pub_seed, node_addr,&master_ctx_prf);
+            sm += XMSS_TREE_HEIGHT*XMSS_N;
+        }
+        else if(XMSS_N == 32) {
+            xmss_wots_pk_from_sig(wots_pk, sm, root, pub_seed, ots_addr,NULL);
+            sm += XMSS_WOTS_SIG_BYTES;
+
+            /* Compute the leaf node using the WOTS public key. */
+            set_ltree_addr(ltree_addr, idx_leaf);
+            l_tree(leaf, wots_pk, pub_seed, ltree_addr,NULL);
+
+            /* Compute the root node of this subtree. */
+            compute_root(root, leaf, idx_leaf, sm, pub_seed, node_addr,NULL);
+            sm += XMSS_TREE_HEIGHT*XMSS_N;
+        }
     }
 
     /* Check if the root node equals the root node in the public key. */
@@ -361,6 +361,9 @@ int xmssmt_core_sign_open(unsigned char *m, unsigned long long *mlen,
     /* If verification was successful, copy the message from the signature. */
     memcpy(m, sm, *mlen);
 
+    if(XMSS_N == 64) {
+        wc_Shake256_Free(&master_ctx_prf);
+    }
     return 0;
 }
 

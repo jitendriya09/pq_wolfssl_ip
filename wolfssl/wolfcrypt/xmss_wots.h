@@ -24,6 +24,7 @@
     extern "C" {
 #endif
 
+#include <wolfssl/wolfcrypt/sha3.h>
 #include <stdint.h>
 
 /**
@@ -35,7 +36,8 @@
  * Writes the computed public key to 'pk'.
  */
 void wots_pkgen(unsigned char *pk, const unsigned char *seed,
-                const unsigned char *pub_seed, uint32_t addr[8]);
+                const unsigned char *pub_seed, uint32_t addr[8],
+                wc_Shake *master_ctx_skgen,wc_Shake *master_ctx_prf);
 
 /**
  * Takes a n-byte message and the 32-byte seed for the private key to compute a
@@ -43,7 +45,7 @@ void wots_pkgen(unsigned char *pk, const unsigned char *seed,
  */
 void xmss_wots_sign(unsigned char *sig, const unsigned char *msg,
                const unsigned char *seed, const unsigned char *pub_seed,
-               uint32_t addr[8]);
+               uint32_t addr[8],wc_Shake *master_ctx_skgen,wc_Shake *master_ctx_prf);
 
 /**
  * Takes a WOTS signature and an n-byte message, computes a WOTS public key.
@@ -52,7 +54,7 @@ void xmss_wots_sign(unsigned char *sig, const unsigned char *msg,
  */
 void xmss_wots_pk_from_sig(unsigned char *pk,
                       const unsigned char *sig, const unsigned char *msg,
-                      const unsigned char *pub_seed, uint32_t addr[8]);
+                      const unsigned char *pub_seed, uint32_t addr[8],wc_Shake *master_ctx_prf);
 
 #ifdef __cplusplus
     } /* extern "C" */

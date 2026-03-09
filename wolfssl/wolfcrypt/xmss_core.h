@@ -27,6 +27,7 @@
 #include <stdint.h>
 #include <wolfssl/wolfcrypt/random.h>
 #include <wolfssl/wolfcrypt/xmss.h>
+#include <wolfssl/wolfcrypt/sha3.h>
 
 /**
  * Computes the leaf at a given address. First generates the WOTS key pair,
@@ -35,7 +36,8 @@
  */
 void gen_leaf_wots(unsigned char *leaf,
                    const unsigned char *sk_seed, const unsigned char *pub_seed,
-                   uint32_t ltree_addr[8], uint32_t ots_addr[8]);
+                   uint32_t ltree_addr[8], uint32_t ots_addr[8],
+                   wc_Shake *master_ctx_skgen,wc_Shake *master_ctx_prf);
 
 /*
  * Generates a XMSS key pair for a given parameter set.

@@ -17,20 +17,18 @@
 #include <string.h>
 #include <stdint.h>
 #include <wolfssl/wolfcrypt/xmss_hash.h>
-#include <wolfssl/wolfcrypt/sha3.h>
 #include <wolfssl/wolfcrypt/xmss_hash_address.h>
 #include <wolfssl/wolfcrypt/xmss.h>
 #include <wolfssl/wolfcrypt/xmss_wots.h>
 #include <wolfssl/wolfcrypt/xmss_utils.h>
 #include <wolfssl/wolfcrypt/xmss_core.h>
 
-#define XMSS_HASH_PADDING_PRF 3
 /**
  * For a given leaf index, computes the authentication path and the resulting
  * root node using Merkle's TreeHash algorithm.
  * Expects the layer and tree parts of subtree_addr to be set.
  */
-/*static void treehash(unsigned char *root, unsigned char *auth_path,
+static void treehash(unsigned char *root, unsigned char *auth_path,
                      const unsigned char *sk_seed,
                      const unsigned char *pub_seed,
                      uint32_t leaf_idx, const uint32_t subtree_addr[8])
@@ -97,101 +95,6 @@
         }
     }
     memcpy(root, stack, XMSS_N);
-}*/
-
-static void treehash(unsigned char *root, unsigned char *auth_path,
-                     const unsigned char *sk_seed,
-                     const unsigned char *pub_seed,
-                     uint32_t leaf_idx, const uint32_t subtree_addr[8])
-{
-    unsigned char stack[(XMSS_TREE_HEIGHT+1)*XMSS_N];
-    unsigned int heights[XMSS_TREE_HEIGHT+1];
-    unsigned int offset = 0;
-
-    // The subtree has at most 2^20 leafs, so uint32_t suffices. 
-    uint32_t idx;
-    uint32_t tree_idx;
-
-    // We need all three types of addresses in parallel. 
-    uint32_t ots_addr[8] = {0};
-    uint32_t ltree_addr[8] = {0};
-    uint32_t node_addr[8] = {0};
-
-    // Select the required subtree. 
-    xmss_copy_subtree_addr(ots_addr, subtree_addr);
-    xmss_copy_subtree_addr(ltree_addr, subtree_addr);
-    xmss_copy_subtree_addr(node_addr, subtree_addr);
-
-    xmss_set_type(ots_addr, XMSS_ADDR_TYPE_OTS);
-    xmss_set_type(ltree_addr, XMSS_ADDR_TYPE_LTREE);
-    xmss_set_type(node_addr, XMSS_ADDR_TYPE_HASHTREE);
-    
-    wc_Shake master_ctx_hashtree_prf;
-    if (XMSS_N == 64) {
-        unsigned char buf[XMSS_PADDING_LEN + XMSS_N + 8];
-        unsigned char addr_as_bytes[32];
-
-        // Creating buf with opcode | pub seed | addr [1..8] to take snapshot (136 byte)
-        xmss_ull_to_bytes(buf, XMSS_PADDING_LEN, XMSS_HASH_PADDING_PRF);
-        memcpy(buf + XMSS_PADDING_LEN, pub_seed, XMSS_N);
-        addr_to_bytes(addr_as_bytes, node_addr);
-        memcpy(buf + XMSS_PADDING_LEN + XMSS_N, addr_as_bytes, 8);
-
-        
-        wc_InitShake256(&master_ctx_hashtree_prf, NULL, 0);
-        wc_Shake256_Update(&master_ctx_hashtree_prf, (const byte*)buf, XMSS_PADDING_LEN + XMSS_N + 8);
-    }
-
-    for (idx = 0; idx < (uint32_t)(1 << XMSS_TREE_HEIGHT); idx++) {
-        // Add the next leaf node to the stack. 
-        set_ltree_addr(ltree_addr, idx);
-        set_ots_addr(ots_addr, idx);
-        gen_leaf_wots(stack + offset*XMSS_N,
-                      sk_seed, pub_seed, ltree_addr, ots_addr);
-        offset++;
-        heights[offset - 1] = 0;
-
-        // If this is a node we need for the auth path.. 
-        if ((leaf_idx ^ 0x1) == idx) {
-            memcpy(auth_path, stack + (offset - 1)*XMSS_N, XMSS_N);
-        }
-
-        // While the top-most nodes are of equal height.. 
-        while (offset >= 2 && heights[offset - 1] == heights[offset - 2]) {
-            // Compute index of the new node, in the next layer. 
-            tree_idx = (idx >> (heights[offset - 1] + 1));
-
-            // Hash the top-most nodes from the stack together. 
-            // Note that tree height is the 'lower' layer, even though we use
-            //   the index of the new node on the 'higher' layer. This follows
-            //   from the fact that we address the hash function calls.
-            xmss_set_tree_height(node_addr, heights[offset - 1]);
-            xmss_set_tree_index(node_addr, tree_idx);
-            if (XMSS_N == 64) {
-                thash_h(stack + (offset-2)*XMSS_N,
-                           stack + (offset-2)*XMSS_N, pub_seed, node_addr,&master_ctx_hashtree_prf);
-            }
-            else if(XMSS_N == 32) {
-                thash_h(stack + (offset-2)*XMSS_N,
-                           stack + (offset-2)*XMSS_N, pub_seed, node_addr,NULL);
-            }
-            
-            offset--;
-            // Note that the top-most node is now one layer higher. 
-            heights[offset - 1]++;
-
-            // If this is a node we need for the auth path.. 
-            if (((leaf_idx >> heights[offset - 1]) ^ 0x1) == tree_idx) {
-                memcpy(auth_path + heights[offset - 1]*XMSS_N,
-                       stack + (offset - 1)*XMSS_N, XMSS_N);
-            }
-        }
-    }
-    memcpy(root, stack, XMSS_N);
-
-    if(XMSS_N == 64) {
-        wc_Shake256_Free(&master_ctx_hashtree_prf);
-    }
 }
 
 /*
